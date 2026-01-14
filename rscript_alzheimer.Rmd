@@ -1,0 +1,89 @@
+---
+title: "Untitled"
+output: word_document
+date: "2026-01-14"
+---
+
+```{r}
+library(GEOquery)
+library(limma)
+library(umap)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(data.table) 
+library(readr)
+library(purrr)
+```
+
+```{r}
+
+d= read_csv("C:\\Users\\sulta\\OneDrive - University of Toledo\\A_spring_2026\\lab_rotation_2\\Alzheimer\\data.csv")
+colnames(d)
+d <- as.data.frame(d)
+head(d)
+
+# Remove duplicates
+d <- d[!duplicated(d$Geneid), ]
+d <- d[!is.na(d$Geneid), ]
+# Set rownames 
+rownames(d) <- d$Geneid
+dim(d)
+colnames(d)
+
+df=d[,-1]
+head(df)
+colnames(df)
+
+```
+
+```{r}
+########for Deseq2
+
+#####
+condition <- factor(c(rep("AD", 27),rep("HC", 14))) 
+levels(condition)  #### check this to identify the reference group, 1st one always refernce, if it shows HC; at first level that means cntrl treats as reference, otherwise use : 
+condition <- relevel(condition, ref = "HC") 
+coldata= data.frame(row.names=colnames(df),condition)   
+
+
+####DEseq2
+library(DESeq2)
+##check NA
+#sum(is.na(df))
+#colSums(is.na(df))   # per column
+#rowSums(is.na(df))   # per row
+df[is.na(df)] <- 0
+#df <- round(df)  
+
+
+dds <- DESeqDataSetFromMatrix(countData = df, # countData is the final df data which has all counts 
+                              colData = coldata, ## which has conditions as a columns and rows are the col of df
+                              design = ~ condition)
+dds <- DESeq(dds)
+res1 <- results(dds)
+resultsNames(dds)
+head(res1)
+summary(res1)
+###########
+library(tibble)
+
+full_res <- as.data.frame(res1)%>%rownames_to_column("Geneid")  #### it will give us the column name for 1st column
+dim(full_res)
+
+write.csv(full_res, file = "C:\\Users\\sulta\\OneDrive - University of Toledo\\A_spring_2026\\lab_rotation_2\\Alzheimer\\All_result_Alzheimer_data.csv", row.names=F)
+```
+
+```{r}
+
+# Filter results for significant fold changes and sort
+significant_genes <-full_res %>%
+  filter(abs(log2FoldChange) >= 1, padj < 0.05)
+dim(significant_genes)
+```
+
+
+
+
+
