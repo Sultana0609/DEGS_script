@@ -1,0 +1,220 @@
+---
+title: "DE Analysis"
+output: word_document
+date: "2026-01-20"
+---
+
+```{r}
+library(GEOquery)
+library(limma)
+library(umap)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(purrr)
+library(data.table) 
+library(readr)
+library( AnnotationDbi)
+library(GEOquery)
+library(edgeR)
+library(limma)
+library(sva)
+```
+
+
+```{r}
+########download meta data
+#download meta data
+gse <- getGEO("GSE276756", GSEMatrix = TRUE)[[1]]
+meta_data  <- pData(gse)   # sample metadata
+dim(meta_data)
+#######count .csv file
+d= read_csv("C:\\Users\\sulta\\OneDrive - University of Toledo\\A_spring_2026\\lab_rotation_2\\Alzheimer\\data.csv")
+head(d)
+###########
+#•	Load count matrix:
+#o	Ensure the matrix has genes/features as rows and samples as columns.
+#o	Verify that all count values are non-negative integers.
+############Preprocessing QC of count data
+colnames(d)
+############check any missing or non interger in count data
+anyNA(d) ## any missing or NA values
+sum(is.na(d)) # count them
+any(d[,-1] != round(d[,-1]), na.rm = TRUE)   # any non-integer with 
+is.integer(d) # check whether any interger availabe
+# Remove duplicates and NA values
+d <- d[rowSums(is.na(d)) == 0, , drop = FALSE]
+anyNA(d) ### check again any NA or missing values available or not
+d <- d[!duplicated(d$Geneid), ] # only for gene_id
+dim(d)
+############
+# columns of expr = rows of meta
+identical(colnames(d), rownames(meta_data)) # not same order so change the order
+############
+cls <- colnames(d)
+########## make the order of conditions as meta data
+ad <- cls[grepl("^AD\\d+$", cls)] 
+hc <- cls[grepl("^HC\\d+$", cls)]
+
+ad <- ad[order(as.integer(sub("^AD", "", ad)))] 
+hc <- hc[order(as.integer(sub("^HC", "", hc)))]
+
+counts_df = d[, c("Geneid", ad, hc), drop = FALSE]
+colnames(counts_df)
+write.csv(counts_df,"C:\\Users\\sulta\\OneDrive - University of Toledo\\A_spring_2026\\lab_rotation_2\\Alzheimer\\counts_data_filter.csv")
+# Set rownames 
+counts_df <- as.data.frame(counts_df) # with out data frame it might be not working
+rownames(counts_df) <- counts_df$Geneid
+dim(counts_df)
+colnames(counts_df)
+df=counts_df[,-1]
+head(df)
+colnames(df)
+summary(df)
+
+####################
+#preprocessign plot
+count_matrix <- as.matrix(as.data.frame(df))
+barplot(colSums(count_matrix), names.arg=colnames(count_matrix), main="Library Sizes") #### it might be 
+##############
+boxplot(log2(count_matrix + 1), main="Log2(Counts + 1) Distribution")
+
+##################
+log_counts <- log2(count_matrix + 1) 
+
+# Density plot for all samples
+plot(density(log_counts[, 1], na.rm = TRUE),
+     main = "Density Plot of Log2(Counts + 1)",
+     xlab = "Log2(Counts + 1)",
+     ylab = "Density")
+
+for (i in 2:ncol(log_counts)) {
+  lines(density(log_counts[, i], na.rm = TRUE))
+}
+###interpretation of density plot: If most curves overlap closely : good consistency.If one sample curve is shifted far left/right → potential outlier or depth/quality issue
+
+
+```
+
+```{r}
+par(mfrow=c(1,2))
+boxplot(as.data.frame(log2(count_matrix + 1)),main="Original")
+boxplot(as.data.frame(mat_adj),main="Batch corrected")
+
+```
+########################## 
+After Remove Batch Affects
+
+```{r}
+#BiocManager::install("sva")
+
+storage.mode(count_matrix) <- "integer"
+
+# metadata
+condition <- factor(c(rep("AD", 27), rep("HC", 14)))
+condition <- relevel(condition, ref = "HC")
+coldata <- data.frame(row.names = colnames(count_matrix), condition)
+
+# edgeR object + filtering (recommended)
+y <- DGEList(counts = count_matrix, group = coldata$condition)
+keep <- filterByExpr(y, group = coldata$condition)
+y <- y[keep, , keep.lib.sizes = FALSE]
+y <- calcNormFactors(y)
+design = model.matrix(~ condition, data = coldata)
+# voom + limma
+v <- voom(y, design, plot = TRUE) # it will give mean variance trend, v <- voom(dge, design, plot=TRUE), y=dge ( from edger)
+#########PCA plot
+# SVA (estimate hidden batch-like factors)
+#Full model: includes the biological variable of interest (condition)
+#Null model: intercept only (no condition)
+mod  <- model.matrix(~ condition, data = coldata) # full model
+mod0 <- model.matrix(~ 1, data = coldata) # only intercept
+########
+# v is your voom object: v <- voom(y, mod, plot=FALSE)
+n.sv <- num.sv(v$E, mod, method = "leek")
+n.sv
+# estimate surrogate\confounder variables on voom expression
+sv <- sva(v$E, mod, mod0, n.sv = n.sv)
+
+colnames(sv$sv) <- paste0("SV", seq_len(ncol(sv$sv)))
+head(sv$sv)
+
+# add SVs into your own meta data
+coldata <- cbind(coldata, sv$sv)
+##########
+#Compute library size and add to metadata
+lib_size <- colSums(count_matrix)          # total reads per sample
+coldata$lib_size <- lib_size
+
+# this is bette: use log scale (more stable)
+coldata$log_lib_size <- log10(lib_size) # add lib size into own meta data
+
+#######Remove batch effect
+mat <- v$E # v is the  <- voom(y, design, plot = TRUE)
+covar <- as.matrix(coldata[, c("SV1","SV2","SV3","log_lib_size")])
+mat_adj <- limma::removeBatchEffect(
+  mat,
+  covariates = covar,
+  design = model.matrix(~ condition, data = coldata)
+)
+############pca 
+pca <- prcomp(t(mat_adj), scale. = TRUE)
+plot(pca$x[,1], pca$x[,2], pch=19, col=as.integer(coldata$condition),
+     xlab="PC1", ylab="PC2", main="PCA after removing SV effects")
+legend("topright", legend=levels(coldata$condition), pch=19, col=1:2, bty="n")
+#######MDS PCA
+plotMDS(mat_adj, labels = coldata$condition, col = as.integer(coldata$condition))
+legend("topright", legend = levels(coldata$condition), col = 1:2, pch = 16, bty="n")
+################
+
+# mat_adj which genes already batch/SV removed
+group <- factor(coldata$condition)
+design <- model.matrix(~ 0 + group)
+colnames(design) <- levels(group)   # HC, AD
+
+fit <- lmFit(mat_adj, design)
+
+contrast_matrix <- makeContrasts(ADvsHC = AD - HC, levels = design)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+all_result <- topTable(fit2, coef = "ADvsHC", number = Inf, sort.by = "P")
+head(all_result)
+all_res <- data.frame(Geneid = rownames(all_result), all_result, row.names = NULL)
+head(all_res)
+dim(all_res)
+write.csv(all_res,"C:\\Users\\sulta\\OneDrive - University of Toledo\\A_spring_2026\\lab_rotation_2\\Alzheimer\\new_result\\Alzeimer_DE_After_batch_effect.csv")
+#############
+
+```
+
+
+```{r}
+library(AnnotationDbi)
+library(org.Hs.eg.db)
+ens <- all_res$Geneid
+gene_symbols <- mapIds(org.Hs.eg.db,
+                      keys = ens,
+                      column = "SYMBOL",
+                      keytype = "ENSEMBL",
+                      multiVals = "first")
+length(gene_symbols)
+#############
+#hgnc_symbols_filtered <- hgnc_symbols[!is.na(hgnc_symbols)]
+#length(hgnc_symbols_filtered)
+DE_result=data.frame(gene_symbols, all_res)
+dim(DE_result)
+####### checking for NA or duplicates genes
+anyNA(DE_result) ## any missing or NA values
+sum(is.na(DE_result)) # count them
+# Remove duplicates and NA values
+filter<- DE_result[rowSums(is.na(DE_result)) == 0, , drop = FALSE]
+dim(filter)
+anyNA(filter) ### check again any NA or missing values available or not
+filter_data <- filter[!duplicated(filter$gene_symbols), ]
+dim(filter_data)
+write.csv(filter_data,"C:\\Users\\sulta\\OneDrive - University of Toledo\\A_spring_2026\\lab_rotation_2\\Alzheimer\\new_result\\Alzeimer_DE_batch_filter_gene.csv")
+```
+
+
+
